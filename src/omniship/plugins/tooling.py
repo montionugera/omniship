@@ -98,6 +98,7 @@ class FacadeOperation:
             return NodeResult(
                 status=NodeStatus.SUCCESS,
                 duration=time.monotonic() - started,
+                outputs=dict(task_context.outputs.values),
                 artifacts=tuple(task_context.artifacts.values),
                 stdout="\n".join(task_context.log.lines),
             )
