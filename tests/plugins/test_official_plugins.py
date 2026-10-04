@@ -116,6 +116,7 @@ def test_package_entry_points_discover_official_plugins_separately() -> None:
         "napi": "omniship.plugins.napi:register_napi_plugin",
         "maturin": "omniship.plugins.maturin:register_maturin_plugin",
         "homebrew": "omniship.plugins.homebrew:register_homebrew_plugin",
+        "vercel": "omniship.plugins.vercel:register_vercel_plugin",
         "bun": "omniship.plugins.bun:register_bun_plugin",
         "go": "omniship.plugins.go:register_go_plugin",
         "rust": "omniship.plugins.rust:register_rust_plugin",
