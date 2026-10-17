@@ -10,7 +10,7 @@ and generates a provider-neutral execution plan. Provider plugins can also
 compile that plan into native CI files. The bundled GitHub plugin generates
 separate Check, Build, and Ship workflows for GitHub Actions.
 
-Current package version: `0.1.0`. OmniShip is pre-1.0 and its public API may
+Current package version: `0.3.0`. OmniShip is pre-1.0 and its public API may
 still change.
 
 ## Contents
