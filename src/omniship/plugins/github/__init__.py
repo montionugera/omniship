@@ -5,6 +5,7 @@ from .actions import (
     GitHubBootstrap,
     GitHubCheckout,
     GitHubContainer,
+    GitHubCron,
     GitHubJob,
     GitHubMatrix,
     GitHubPermission,
@@ -22,6 +23,7 @@ from .actions import (
 from .blocks import GitHubExternalWorkflow, GitHubPages, GitHubRelease, GitHubTag
 from .operations import register_github_plugin
 from .runtime import GitHub, GitHubPagesResult, GitHubTagResult
+from .timezones import GitHubTimezone
 
 __all__ = [
     "GitHubActions",
@@ -29,6 +31,7 @@ __all__ = [
     "GitHubBootstrap",
     "GitHubBooleanInput",
     "GitHubCheckout",
+    "GitHubCron",
     "GitHubExternalWorkflow",
     "GitHubContainer",
     "GitHubJob",
@@ -43,6 +46,7 @@ __all__ = [
     "GitHubRelease",
     "GitHubTag",
     "GitHubTagResult",
+    "GitHubTimezone",
     "GitHubRunner",
     "GitHubSchedule",
     "GitHubShell",

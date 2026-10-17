@@ -1,11 +1,12 @@
 import re
 import shlex
+from calendar import Day
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields, replace
+from datetime import time
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import ClassVar
-from zoneinfo import available_timezones
+from typing import ClassVar, Self
 
 import yaml
 
@@ -18,6 +19,7 @@ from omniship.workflow.model import GitPluginPackage, Pipeline
 
 from .dependencies import LOCK_FILENAME, GitHubActionLock, resolve_git_plugin
 from .runtime import PAGES_STAGING_PATH
+from .timezones import GitHubTimezone
 
 ARTIFACT_PATH = ".omniship/handoff"
 ARTIFACT_IMPORT_PATH = ".omniship/imports"
@@ -601,32 +603,104 @@ def _validate_cron(expression: str) -> None:
             )
 
 
+def _cron_clock(at: time) -> tuple[int, int]:
+    if not isinstance(at, time):
+        raise TypeError("GitHub cron time must be a datetime.time")
+    if at.tzinfo is not None:
+        raise ValueError(
+            "GitHub cron time must not carry a timezone; "
+            "set the GitHubSchedule timezone instead"
+        )
+    if at.second or at.microsecond:
+        raise ValueError("GitHub cron time must use whole minutes")
+    return at.minute, at.hour
+
+
+@dataclass(frozen=True)
+class GitHubCron:
+    """A validated five-field cron expression; prefer the named constructors."""
+
+    expression: str
+
+    def __post_init__(self) -> None:
+        _validate_cron(self.expression)
+
+    @classmethod
+    def every(cls, *, minutes: int) -> Self:
+        if (
+            not isinstance(minutes, int)
+            or isinstance(minutes, bool)
+            or not 5 <= minutes < 60
+            or 60 % minutes
+        ):
+            raise ValueError(
+                "GitHub cron interval must be 5, 6, 10, 12, 15, 20, or 30 minutes"
+            )
+        return cls(f"*/{minutes} * * * *")
+
+    @classmethod
+    def hourly(cls, *, minute: int = 0) -> Self:
+        if not isinstance(minute, int) or isinstance(minute, bool):
+            raise TypeError("GitHub hourly cron minute must be an integer")
+        return cls(f"{minute} * * * *")
+
+    @classmethod
+    def daily(cls, *, at: time) -> Self:
+        minute, hour = _cron_clock(at)
+        return cls(f"{minute} {hour} * * *")
+
+    @classmethod
+    def weekdays(cls, *, at: time) -> Self:
+        minute, hour = _cron_clock(at)
+        return cls(f"{minute} {hour} * * 1-5")
+
+    @classmethod
+    def weekly(cls, *days: Day, at: time) -> Self:
+        if not days:
+            raise ValueError("GitHub weekly cron requires at least one day")
+        if any(not isinstance(day, Day) for day in days):
+            raise TypeError("GitHub weekly cron days must be calendar.Day values")
+        minute, hour = _cron_clock(at)
+        # calendar.Day counts from Monday = 0; cron counts from Sunday = 0.
+        numbers = sorted({(day + 1) % 7 for day in days})
+        return cls(f"{minute} {hour} * * {','.join(map(str, numbers))}")
+
+    @classmethod
+    def monthly(cls, *, day: int, at: time) -> Self:
+        if not isinstance(day, int) or isinstance(day, bool) or not 1 <= day <= 28:
+            raise ValueError(
+                "GitHub monthly cron day must be from 1 to 28 so it runs every month"
+            )
+        minute, hour = _cron_clock(at)
+        return cls(f"{minute} {hour} {day} * *")
+
+
 @dataclass(frozen=True)
 class GitHubSchedule:
     """Cron schedules that start a workflow from the default branch."""
 
-    crons: Iterable[str]
-    timezone: str | None = None
+    crons: Iterable[GitHubCron]
+    timezone: GitHubTimezone | None = None
     event: ClassVar[str] = "schedule"
 
     def __post_init__(self) -> None:
-        crons = _normalize_trigger_values(self.crons, field_name="crons")
+        if isinstance(self.crons, (str, bytes)):
+            raise TypeError("GitHub schedule crons must be GitHubCron values")
+        crons = tuple(self.crons)
         if not crons:
             raise ValueError("GitHub schedule requires at least one cron")
-        for cron in crons:
-            _validate_cron(cron)
+        if any(not isinstance(cron, GitHubCron) for cron in crons):
+            raise TypeError("GitHub schedule crons must be GitHubCron values")
         object.__setattr__(self, "crons", crons)
-        if self.timezone is not None and self.timezone not in available_timezones():
-            raise ValueError(
-                f"GitHub schedule timezone '{self.timezone}' must be an IANA time zone"
-            )
+        if self.timezone is not None and not isinstance(self.timezone, GitHubTimezone):
+            raise TypeError("GitHub schedule timezone must be a GitHubTimezone value")
 
     def to_document(self) -> list[dict[str, str]]:
         entries: list[dict[str, str]] = []
         for cron in self.crons:
-            entry = {"cron": cron}
+            entry = {"cron": cron.expression}
             if self.timezone is not None:
-                entry["timezone"] = self.timezone
+                entry["timezone"] = self.timezone.value
             entries.append(entry)
         return entries
 
