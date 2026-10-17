@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 import tempfile
 import tomllib
 from collections.abc import Iterable
@@ -48,6 +47,8 @@ class PythonTools:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
         output: list[str] = []
@@ -67,14 +68,16 @@ class PythonTools:
             stderr="",
         )
 
+    # Tools run in the project's environment through uv: OmniShip itself may
+    # run from an isolated uvx environment without the project's dependencies.
     def pytest(self) -> None:
-        self._run([sys.executable, "-m", "pytest"])
+        self._run(["uv", "run", "python", "-m", "pytest"])
 
     def pyright(self) -> None:
-        self._run(["pyright"])
+        self._run(["uv", "run", "pyright"])
 
     def ruff(self, *, fix: bool = False) -> None:
-        arguments = ["ruff", "check", "."]
+        arguments = ["uv", "run", "ruff", "check", "."]
         if fix:
             arguments.append("--fix")
         self._run(arguments)
@@ -88,9 +91,7 @@ class PythonTools:
             dir=self.workspace_root,
         ) as staging_directory:
             staging = Path(staging_directory)
-            self._run(
-                [sys.executable, "-m", "build", "--wheel", "--outdir", str(staging)]
-            )
+            self._run(["uv", "build", "--wheel", "--out-dir", str(staging)])
             wheels = publish_staged_wheels(staging, output_path)
         if not wheels:
             raise TaskFailure("Wheel build produced no .whl files")
@@ -137,6 +138,12 @@ class Python(PythonTools):
                     artifact.path.suffix == ".whl"
                     or artifact.path.name.endswith(".tar.gz")
                 )
+            )
+        if not selected:
+            # Without files uv publishes dist/*, which may hold stale builds.
+            raise TaskFailure(
+                "No Python distributions to publish; pass files or provide "
+                "wheel or sdist artifacts"
             )
         arguments = ["uv", "publish", *selected]
         if publish_url is not None:

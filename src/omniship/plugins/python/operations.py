@@ -1,6 +1,5 @@
 import asyncio
 import os
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -46,6 +45,8 @@ class PyPIPublishConfig(BaseModel):
     dry_run: bool = False
 
 
+# Tools run in the project's environment through uv: OmniShip itself may run
+# from an isolated uvx environment without the project's dependencies.
 async def _execute_tool(
     context: ExecutionContext,
     arguments: list[str],
@@ -78,7 +79,7 @@ class RuffOperation:
             config = RuffConfig.model_validate(inputs.params)
         except Exception as exc:
             return _invalid(started, exc)
-        arguments = ["ruff", "check", "."]
+        arguments = ["uv", "run", "ruff", "check", "."]
         if config.fix:
             arguments.append("--fix")
         return await _command_result(context, arguments, started)
@@ -97,7 +98,7 @@ class PytestOperation:
             config = PytestConfig.model_validate(inputs.params)
         except Exception as exc:
             return _invalid(started, exc)
-        arguments = [sys.executable, "-m", "pytest"]
+        arguments = ["uv", "run", "python", "-m", "pytest"]
         if config.coverage:
             arguments.append("--cov=.")
         if config.minimum_coverage is not None:
@@ -132,14 +133,7 @@ class WheelOperation:
                 dir=context.workspace_root,
             ) as staging_directory:
                 staging = Path(staging_directory)
-                arguments = [
-                    sys.executable,
-                    "-m",
-                    "build",
-                    "--wheel",
-                    "--outdir",
-                    str(staging),
-                ]
+                arguments = ["uv", "build", "--wheel", "--out-dir", str(staging)]
                 return_code, stdout, stderr = await _execute_tool(context, arguments)
                 if return_code == 0:
                     wheels = publish_staged_wheels(staging, output)

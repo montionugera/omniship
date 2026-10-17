@@ -833,6 +833,14 @@ class GitHubActionStep:
         object.__setattr__(self, "inputs", dict(self.inputs))
 
 
+def _splits_artifacts(placement: object) -> bool:
+    """Whether a Build job uploads one handoff artifact per matrix entry."""
+
+    return isinstance(placement, GitHubJob) and (
+        placement.matrix is not None or len(placement.runners) > 1
+    )
+
+
 def _render_requirement_value(value: int | str | GitHubStringInput) -> str:
     if isinstance(value, GitHubStringInput):
         return f"${{{{ inputs.{value.name} }}}}"
@@ -1543,11 +1551,18 @@ class GitHubActionsGenerator:
                         if nodes[dependency].uses == "github/external-workflow":
                             continue
                         dependency_job = job_ids[dependency]
+                        # Exact names: a prefix glob would also match jobs such
+                        # as build-app-docs when depending on build-app.
+                        dependency_pattern = f"omniship-build-{dependency_job}"
+                        if _splits_artifacts(
+                            nodes[dependency].execution or actions.default_job
+                        ):
+                            dependency_pattern += ".*"
                         steps.append(
                             {
                                 "uses": action_lock.reference("download-artifact"),
                                 "with": {
-                                    "pattern": f"omniship-build-{dependency_job}*",
+                                    "pattern": dependency_pattern,
                                     "path": f"{ARTIFACT_IMPORT_PATH}/{dependency_job}",
                                 },
                             }
@@ -1633,11 +1648,12 @@ class GitHubActionsGenerator:
                     )
 
                 if stage == Stage.BUILD:
+                    # "." cannot occur in job ids, so it separates the suffix.
                     artifact_name = f"omniship-build-{job_id}"
                     if placement.matrix is not None:
-                        artifact_name += "-${{ strategy.job-index }}"
+                        artifact_name += ".${{ strategy.job-index }}"
                     elif len(placement.runners) > 1:
-                        artifact_name += "-${{ matrix.runner }}"
+                        artifact_name += ".${{ matrix.runner }}"
                     steps.append(
                         {
                             "uses": action_lock.reference("upload-artifact"),

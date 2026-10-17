@@ -177,6 +177,8 @@ class StageExecutor:
         completed_nodes: set[str] = set()
         failed_nodes: set[str] = set()
         skipped_nodes: set[str] = set()
+        # Skipped because an upstream node failed, as opposed to a condition.
+        failure_skipped: set[str] = set()
         running_tasks: dict[str, asyncio.Task[NodeResult]] = {}
         task_to_node: dict[asyncio.Task[NodeResult], Node] = {}
 
@@ -210,16 +212,7 @@ class StageExecutor:
                 # All dependencies resolved.
                 # Check if any dependency failed or was skipped due to failure
                 failed_dep = next(
-                    (
-                        d
-                        for d in deps
-                        if d in failed_nodes
-                        or (
-                            d in skipped_nodes
-                            and context.results.get(d)
-                            and "dependency" in (context.results[d].error_message or "")
-                        )
-                    ),
+                    (d for d in deps if d in failed_nodes or d in failure_skipped),
                     None,
                 )
 
@@ -231,6 +224,7 @@ class StageExecutor:
                     )
                     context.record_result(node_id, res)
                     skipped_nodes.add(node_id)
+                    failure_skipped.add(node_id)
                     progress_made = True
                     for listener in self.listeners:
                         listener.on_node_finish(graph.stage, node, res)

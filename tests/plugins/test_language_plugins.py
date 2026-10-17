@@ -1,3 +1,5 @@
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -67,7 +69,11 @@ from omniship.workflow.compiler import compile_pipeline
         (
             NodeToolchain(version="24.8.0"),
             "setup-node",
-            {"node-version": "24.8.0", "package-manager-cache": False},
+            {
+                "node-version": "24.8.0",
+                "package-manager-cache": False,
+                "registry-url": "https://registry.npmjs.org",
+            },
         ),
         (
             BunToolchain(version="1.3.3"),
@@ -142,6 +148,7 @@ def test_toolchain_setup_uses_the_locked_action_pin(tmp_path: Path) -> None:
         "with": {
             "node-version": "24.8.0",
             "package-manager-cache": False,
+            "registry-url": "https://registry.npmjs.org",
         },
     } in document["jobs"]["check-verify"]["steps"]
 
@@ -570,7 +577,9 @@ def test_publishers_never_put_tokens_in_command_arguments(
     monkeypatch.setattr(Rust, "_run", run, raising=False)
 
     Node(TaskContext(tmp_path, {"NODE_AUTH_TOKEN": "npm-secret"})).publish()
-    Python(TaskContext(tmp_path, {"UV_PUBLISH_TOKEN": "pypi-secret"})).publish()
+    Python(TaskContext(tmp_path, {"UV_PUBLISH_TOKEN": "pypi-secret"})).publish(
+        files=["demo.whl"]
+    )
     Rust(TaskContext(tmp_path, {"CARGO_REGISTRY_TOKEN": "cargo-secret"})).publish()
 
     flattened = " ".join(argument for command in commands for argument in command)
@@ -592,9 +601,42 @@ def test_trusted_publishers_do_not_require_registry_tokens(
     monkeypatch.setattr(Python, "_run", run, raising=False)
 
     Node(TaskContext(tmp_path, {})).publish(trusted_publishing=True)
-    Python(TaskContext(tmp_path, {})).publish(trusted_publishing=True)
+    Python(TaskContext(tmp_path, {})).publish(
+        files=["demo.whl"], trusted_publishing=True
+    )
 
     assert commands == [
         ["npm", "publish", "--provenance"],
-        ["uv", "publish", "--trusted-publishing", "always"],
+        ["uv", "publish", "demo.whl", "--trusted-publishing", "always"],
     ]
+
+
+def test_tool_facade_tolerates_non_utf8_tool_output(tmp_path: Path) -> None:
+    from omniship.plugins.tooling import ToolFacade
+
+    context = TaskContext(tmp_path, dict(os.environ))
+    script = "import sys; sys.stdout.buffer.write(b'caf\\xe9 ok\\n')"
+
+    output = ToolFacade(context)._run([sys.executable, "-c", script])
+
+    assert output == "caf� ok\n"
+
+
+def test_tool_facade_resolves_executables_from_task_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from omniship.plugins.tooling import ToolFacade
+
+    resolved: list[tuple[str, str | None]] = []
+
+    def which(name: str, path: str | None = None) -> str:
+        resolved.append((name, path))
+        return sys.executable
+
+    monkeypatch.setattr("omniship.plugins.tooling.shutil.which", which)
+    context = TaskContext(tmp_path, {**os.environ, "PATH": "task-path"})
+
+    ToolFacade(context)._run(["npm", "-c", "pass"])
+
+    assert resolved == [("npm", "task-path")]

@@ -39,7 +39,7 @@ async def test_wheel_operation_reports_an_overwritten_wheel(
         context: ExecutionContext,
         arguments: list[str],
     ) -> tuple[int, str, str]:
-        build_output = Path(arguments[arguments.index("--outdir") + 1])
+        build_output = Path(arguments[arguments.index("--out-dir") + 1])
         build_output.mkdir(parents=True, exist_ok=True)
         (build_output / existing.name).write_bytes(b"new wheel")
         return 0, "built", ""
@@ -67,7 +67,7 @@ def test_imperative_wheel_build_reports_an_overwritten_wheel(
     tools = PythonTools(tmp_path, {})
 
     def build_wheel(self: PythonTools, arguments: list[str]):
-        build_output = Path(arguments[arguments.index("--outdir") + 1])
+        build_output = Path(arguments[arguments.index("--out-dir") + 1])
         build_output.mkdir(parents=True, exist_ok=True)
         (build_output / existing.name).write_bytes(b"new wheel")
 

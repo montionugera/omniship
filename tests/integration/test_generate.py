@@ -6,7 +6,8 @@ from click.testing import CliRunner
 
 from omniship.cli import runner as cli_runner
 from omniship.cli.app import cli
-from omniship.core.artifact import ArtifactSet
+from omniship.core.artifact import Artifact, ArtifactSet
+from omniship.core.artifact_bundle import export_artifacts, import_artifacts
 from omniship.core.stage import Stage
 
 
@@ -142,6 +143,44 @@ def test_run_node_uses_reviewed_source_revision_for_imports(
 
     assert result == 0
     assert revisions == ["source-revision"]
+
+
+def test_run_node_exports_only_artifacts_it_produced(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OMNISHIP_REVISION", raising=False)
+    monkeypatch.delenv("OMNISHIP_EXPECTED_ARTIFACT_REVISION", raising=False)
+    upstream = tmp_path / "app.whl"
+    upstream.write_text("wheel", encoding="utf-8")
+    export_artifacts(
+        ArtifactSet([Artifact.from_path(upstream)]),
+        tmp_path / "imports" / "omniship-build-wheel",
+    )
+    upstream.unlink()
+    config = tmp_path / "omniship.yaml"
+    config.write_text(
+        "version: 1\n"
+        "build:\n"
+        "  checksums:\n"
+        "    uses: core/command\n"
+        "    with:\n"
+        "      run: echo sum > SHA256SUMS\n"
+        "      artifacts: [SHA256SUMS]\n",
+        encoding="utf-8",
+    )
+
+    result = cli_runner.run_node(
+        Stage.BUILD,
+        "checksums",
+        config_path=str(config),
+        artifact_import_root=str(tmp_path / "imports"),
+        artifact_export_path=str(tmp_path / "handoff"),
+    )
+
+    assert result == 0
+    exported = import_artifacts(tmp_path / "handoff")
+    assert [artifact.name for artifact in exported] == ["SHA256SUMS"]
 
 
 def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> None:
@@ -791,6 +830,49 @@ def test_run_node_scopes_the_task_workspace_to_a_subdirectory(
     assert (package / "cwd.txt").read_text(encoding="utf-8") == str(package)
 
 
+def test_build_dependency_download_does_not_match_prefixed_jobs(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "workflow.py"
+    output = tmp_path / "omniship.yaml"
+    source.write_text(
+        "from omniship import Pipeline\n"
+        "from omniship.plugins.github import GitHubActions\n"
+        "github = GitHubActions()\n"
+        "pipeline = Pipeline(targets=[github])\n"
+        "@pipeline.build\n"
+        "def build(stage):\n"
+        "    @stage.task()\n"
+        "    def app(ctx):\n"
+        "        pass\n"
+        "    @stage.task()\n"
+        "    def app_docs(ctx):\n"
+        "        pass\n"
+        "    @stage.task(after=[app])\n"
+        "    def package(ctx):\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+
+    generated = CliRunner().invoke(
+        cli,
+        ["generate", "-f", str(source), "-o", str(output)],
+    )
+    assert generated.exit_code == 0, generated.output
+    actions = yaml.load(
+        (tmp_path / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+
+    assert "build-app-docs" in actions["jobs"]
+    downloads = [
+        step["with"]["pattern"]
+        for step in actions["jobs"]["build-package"]["steps"]
+        if "download-artifact" in step.get("uses", "")
+    ]
+    assert downloads == ["omniship-build-build-app"]
+
+
 def test_build_node_dependencies_download_predecessor_artifacts(
     tmp_path: Path,
 ) -> None:
@@ -829,13 +911,13 @@ def test_build_node_dependencies_download_predecessor_artifacts(
         "macos-15",
     ]
     assert compile_job["steps"][-1]["with"]["name"] == (
-        "omniship-build-build-compile-${{ matrix.runner }}"
+        "omniship-build-build-compile.${{ matrix.runner }}"
     )
     assert package_job["needs"] == "build-compile"
     assert {
         "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
         "with": {
-            "pattern": "omniship-build-build-compile*",
+            "pattern": "omniship-build-build-compile.*",
             "path": ".omniship/imports/build-compile",
         },
     } in package_job["steps"]

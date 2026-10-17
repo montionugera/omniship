@@ -47,8 +47,10 @@ To install the current checkout into an existing environment:
 uv pip install -e /path/to/omniship
 ```
 
-The Python plugin does not vendor Ruff, pytest, or build. Add the tools used by
-your workflow to the consuming project's dependencies and lock them normally.
+The Python plugin does not vendor Ruff, pytest, or pyright. It runs them with
+`uv run` in the consuming project's environment and builds wheels with
+`uv build`, so add the tools used by your workflow to the project's
+dependencies (for example the `dev` group) and lock them normally.
 
 ## Quick start
 
@@ -112,6 +114,12 @@ omniship generate --check
 `pyproject.toml` when `tag` is omitted. The generated GitHub Actions job uses
 GitHub's own token; generating the workflows does not require release
 credentials on a developer machine.
+
+When Ship runs for a pushed tag, the release fails if its tag differs from the
+pushed one, so bump the version and regenerate before tagging. A new tag is
+created at the built commit. Re-running Ship reuses the existing release and
+skips assets already uploaded with identical content. Release assets must be
+files: directory artifacts are skipped unless listed in `files`, which fails.
 
 ## The pipeline model
 
@@ -219,9 +227,11 @@ def build(stage):
 OmniShip verifies artifact paths and carries them through the pipeline. In
 generated GitHub Actions workflows:
 
-- every Build node uploads its own artifact bundle;
+- every Build node uploads a bundle of the artifacts it produced;
 - a dependent Build node downloads its predecessors' bundles;
-- every Ship node receives the completed Build artifacts.
+- every Ship node receives the completed Build artifacts once each.
+
+Bundles record executable files, so binaries keep their mode after transfer.
 
 A directory artifact can be deployed with the bundled GitHub Pages component:
 
@@ -692,8 +702,8 @@ bootstrap pins. `omniship update` resolves the newest stable release within
 those compatibility boundaries. Commit the updated lockfile and regenerated
 workflows together.
 
-Project tool versions are separate: keep Ruff, pytest, build, and other tools
-in the project's normal dependency file and `uv.lock`.
+Project tool versions are separate: keep Ruff, pytest, and other tools in the
+project's normal dependency file and `uv.lock`.
 
 ## Logging
 

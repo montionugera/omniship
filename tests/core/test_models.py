@@ -46,6 +46,23 @@ def test_artifact_and_set(tmp_path: Path):
     assert len(aset.to_list()) == 2
 
 
+def test_artifact_set_matches_path_references_by_whole_segments(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "dist").mkdir()
+    other = tmp_path / "dist" / "myapp.whl"
+    other.write_text("other", encoding="utf-8")
+    wanted = tmp_path / "dist" / "app.whl"
+    wanted.write_text("wanted", encoding="utf-8")
+    artifacts = ArtifactSet(
+        [Artifact.from_path(other, name="other"), Artifact.from_path(wanted, name="x")]
+    )
+
+    assert artifacts.get("app.whl").path == wanted
+    assert artifacts.get("dist/app.whl").path == wanted
+    assert artifacts.get("p.whl") is None
+
+
 def test_artifact_digest_rejects_untrusted_manifest_values() -> None:
     with pytest.raises(ValueError, match="SHA-256"):
         ArtifactDigest("sha256", "not-a-digest")
@@ -195,6 +212,88 @@ def test_artifact_bundle_import_rejects_mixed_or_unexpected_revisions(
         import_artifact_bundles(imports)
     with pytest.raises(ValueError, match="expected revision 'expected'"):
         import_artifacts(imports / "linux.whl", expected_revision="expected")
+
+
+def test_artifact_bundle_root_ignores_manifest_files_inside_artifacts(
+    tmp_path: Path,
+) -> None:
+    site = tmp_path / "dist"
+    site.mkdir()
+    (site / "manifest.json").write_text('{"name": "PWA"}', encoding="utf-8")
+    (site / "index.html").write_text("<h1>site</h1>", encoding="utf-8")
+    artifacts = ArtifactSet()
+    artifacts.add(Artifact.from_path(site))
+    imports = tmp_path / "imports"
+    export_artifacts(artifacts, imports / "omniship-build-site")
+
+    restored = import_artifact_bundles(imports)
+
+    artifact = restored.get("dist")
+    assert artifact is not None
+    assert (artifact.path / "manifest.json").is_file()
+
+
+def test_artifact_bundle_restores_executable_files(tmp_path: Path) -> None:
+    binary = tmp_path / "tool"
+    binary.write_bytes(b"#!/bin/sh\n")
+    binary.chmod(0o755)
+    package = tmp_path / "package"
+    (package / "bin").mkdir(parents=True)
+    (package / "bin" / "tool").write_bytes(b"#!/bin/sh\n")
+    (package / "bin" / "tool").chmod(0o755)
+    (package / "README").write_text("docs", encoding="utf-8")
+    artifacts = ArtifactSet()
+    artifacts.add(Artifact.from_path(binary))
+    artifacts.add(Artifact.from_path(package))
+    bundle = tmp_path / "handoff"
+    export_artifacts(artifacts, bundle)
+    # upload-artifact does not preserve file modes.
+    for stored in (bundle / "items").rglob("*"):
+        if stored.is_file():
+            stored.chmod(0o644)
+
+    restored = import_artifacts(bundle)
+
+    assert restored.get("tool").path.stat().st_mode & 0o111
+    restored_package = restored.get("package").path
+    assert (restored_package / "bin" / "tool").stat().st_mode & 0o111
+    assert not (restored_package / "README").stat().st_mode & 0o111
+
+
+def test_artifact_bundle_rejects_escaping_executable_entries(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "README").write_text("docs", encoding="utf-8")
+    artifacts = ArtifactSet()
+    artifacts.add(Artifact.from_path(package))
+    bundle = tmp_path / "handoff"
+    export_artifacts(artifacts, bundle)
+    manifest_path = bundle / "manifest.json"
+    document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    document["artifacts"][0]["executables"] = ["../../manifest.json"]
+    manifest_path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="executable"):
+        import_artifacts(bundle)
+
+
+def test_artifact_bundle_v1_rejects_symlinks_in_directories(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "README").write_text("docs", encoding="utf-8")
+    artifacts = ArtifactSet()
+    artifacts.add(Artifact.from_path(package))
+    bundle = tmp_path / "handoff"
+    export_artifacts(artifacts, bundle)
+    stored = next((bundle / "items").glob("*/package"))
+    (stored / "secret").symlink_to(tmp_path / "outside")
+    manifest_path = bundle / "manifest.json"
+    document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    document["version"] = 1
+    manifest_path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="symlink"):
+        import_artifacts(bundle)
 
 
 def test_node_result():

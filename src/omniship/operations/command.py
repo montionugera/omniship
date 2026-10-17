@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from omniship.core.artifact import Artifact
 from omniship.core.context import ExecutionContext
 from omniship.core.node import NodeInputs
-from omniship.core.process import stream_process
+from omniship.core.process import new_process_group, stream_process
 from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
 from omniship.plugins.metadata import OperationDefinition
@@ -74,6 +74,7 @@ class CommandOperation:
                     env=merged_env,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    **new_process_group(),
                 )
             else:
                 proc = await asyncio.create_subprocess_exec(
@@ -82,6 +83,7 @@ class CommandOperation:
                     env=merged_env,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    **new_process_group(),
                 )
 
             output = await stream_process(proc, context, timeout=cfg.timeout)

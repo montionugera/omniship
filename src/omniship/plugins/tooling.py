@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
 import subprocess
 import time
 import traceback
@@ -32,13 +33,20 @@ class ToolFacade:
         *,
         env: Mapping[str, str] | None = None,
     ) -> str:
+        process_env = {**self.context.env, **dict(env or {})}
+        # Resolve against the task PATH; this also finds npm.cmd on Windows.
+        executable = (
+            shutil.which(arguments[0], path=process_env.get("PATH")) or arguments[0]
+        )
         process = subprocess.Popen(
-            list(arguments),
+            [executable, *arguments[1:]],
             cwd=self.context.workspace,
-            env={**self.context.env, **dict(env or {})},
+            env=process_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
         output: list[str] = []

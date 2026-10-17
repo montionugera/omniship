@@ -65,6 +65,14 @@ class Artifact:
             provenance=provenance,
         )
 
+    def matches(self, reference: str) -> bool:
+        """Match by name, full path, or trailing whole path segments."""
+
+        if self.name == reference or str(self.path) == reference:
+            return True
+        parts = Path(reference).parts
+        return bool(parts) and self.path.parts[-len(parts) :] == parts
+
 
 @dataclass
 class ArtifactSet:
@@ -82,14 +90,7 @@ class ArtifactSet:
     def get(self, name_or_path: str) -> Artifact | None:
         """Find the first artifact by name, full path, or path suffix."""
 
-        for a in self._artifacts:
-            if (
-                a.name == name_or_path
-                or str(a.path) == name_or_path
-                or str(a.path).endswith(name_or_path)
-            ):
-                return a
-        return None
+        return next((a for a in self._artifacts if a.matches(name_or_path)), None)
 
     def __iter__(self) -> Iterator[Artifact]:
         return iter(self._artifacts)

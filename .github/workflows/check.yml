@@ -57,6 +57,7 @@ jobs:
       with:
         package-manager-cache: false
         node-version: 24.8.0
+        registry-url: https://registry.npmjs.org
     - name: Set up NAPI-RS
       run: npm install --global @napi-rs/cli@3.0.0 --ignore-scripts
     - name: Run Napi Integration

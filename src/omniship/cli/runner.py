@@ -8,6 +8,7 @@ from rich.console import Console
 
 from omniship.cli.ui import TerminalUI
 from omniship.config.loader import find_config_file, load_and_validate
+from omniship.core.artifact import ArtifactSet
 from omniship.core.artifact_bundle import (
     export_artifacts,
     import_artifact_bundles,
@@ -188,6 +189,7 @@ def run_node(
             console.print(f"[bold red]Artifact Import Error:[/bold red] {exc}")
             return 1
 
+    imported_paths = {artifact.path for artifact in context.artifacts}
     selected = replace(graph.nodes[node_id], dependencies=frozenset())
     selected_graph = StageGraph(stage=stage)
     selected_graph.add_node(selected)
@@ -201,7 +203,15 @@ def run_node(
             destination = Path(artifact_export_path)
             if not destination.is_absolute():
                 destination = repository_root / destination
-            export_artifacts(context.artifacts, destination)
+            # Imported artifacts already travel in their producers' bundles.
+            produced = ArtifactSet(
+                [
+                    artifact
+                    for artifact in context.artifacts
+                    if artifact.path not in imported_paths
+                ]
+            )
+            export_artifacts(produced, destination)
         except Exception as exc:
             console.print(f"[bold red]Artifact Export Error:[/bold red] {exc}")
             return 1
