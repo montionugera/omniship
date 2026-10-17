@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, fields, replace
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import ClassVar
+from zoneinfo import available_timezones
 
 import yaml
 
@@ -549,7 +550,88 @@ class GitHubWorkflowDispatch:
         }
 
 
-GitHubTrigger = GitHubPush | GitHubPullRequest | GitHubWorkflowDispatch
+_CRON_MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")  # fmt: skip
+_CRON_WEEKDAYS = ("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT")
+_CRON_FIELDS = (
+    ("minute", 0, 59, ()),
+    ("hour", 0, 23, ()),
+    ("day of month", 1, 31, ()),
+    ("month", 1, 12, _CRON_MONTHS),
+    ("day of week", 0, 6, _CRON_WEEKDAYS),
+)
+
+
+def _cron_value(value: str, low: int, high: int, names: tuple[str, ...]) -> int | None:
+    if re.fullmatch(r"[0-9]+", value):
+        number = int(value)
+        return number if low <= number <= high else None
+    if value.upper() in names:
+        return low + names.index(value.upper())
+    return None
+
+
+def _valid_cron_item(item: str, low: int, high: int, names: tuple[str, ...]) -> bool:
+    base, has_step, step = item.partition("/")
+    if has_step and not (re.fullmatch(r"[0-9]+", step) and int(step) > 0):
+        return False
+    if base == "*":
+        return True
+    start, has_range, end = base.partition("-")
+    values = [_cron_value(start, low, high, names)]
+    if has_range:
+        values.append(_cron_value(end, low, high, names))
+    if None in values:
+        return False
+    return not has_range or values[0] <= values[1]
+
+
+def _validate_cron(expression: str) -> None:
+    if not isinstance(expression, str):
+        raise TypeError("GitHub schedule cron must be a string")
+    parts = expression.split()
+    if len(parts) != 5:
+        raise ValueError(f"GitHub schedule cron '{expression}' must have 5 fields")
+    for part, (label, low, high, names) in zip(parts, _CRON_FIELDS):
+        if not all(
+            _valid_cron_item(item, low, high, names) for item in part.split(",")
+        ):
+            raise ValueError(
+                f"GitHub schedule cron '{expression}' has an invalid {label} field"
+            )
+
+
+@dataclass(frozen=True)
+class GitHubSchedule:
+    """Cron schedules that start a workflow from the default branch."""
+
+    crons: Iterable[str]
+    timezone: str | None = None
+    event: ClassVar[str] = "schedule"
+
+    def __post_init__(self) -> None:
+        crons = _normalize_trigger_values(self.crons, field_name="crons")
+        if not crons:
+            raise ValueError("GitHub schedule requires at least one cron")
+        for cron in crons:
+            _validate_cron(cron)
+        object.__setattr__(self, "crons", crons)
+        if self.timezone is not None and self.timezone not in available_timezones():
+            raise ValueError(
+                f"GitHub schedule timezone '{self.timezone}' must be an IANA time zone"
+            )
+
+    def to_document(self) -> list[dict[str, str]]:
+        entries: list[dict[str, str]] = []
+        for cron in self.crons:
+            entry = {"cron": cron}
+            if self.timezone is not None:
+                entry["timezone"] = self.timezone
+            entries.append(entry)
+        return entries
+
+
+GitHubTrigger = GitHubPush | GitHubPullRequest | GitHubWorkflowDispatch | GitHubSchedule
 
 
 @dataclass(frozen=True, slots=True)
@@ -715,7 +797,12 @@ class GitHubWorkflow:
         if any(
             not isinstance(
                 trigger,
-                (GitHubPush, GitHubPullRequest, GitHubWorkflowDispatch),
+                (
+                    GitHubPush,
+                    GitHubPullRequest,
+                    GitHubWorkflowDispatch,
+                    GitHubSchedule,
+                ),
             )
             for trigger in triggers
         ):
@@ -723,6 +810,14 @@ class GitHubWorkflow:
         events = [trigger.event for trigger in triggers]
         if len(set(events)) != len(events):
             raise ValueError("GitHub workflow cannot contain duplicate trigger types")
+        if any(isinstance(trigger, GitHubSchedule) for trigger in triggers) and any(
+            isinstance(trigger, GitHubWorkflowDispatch) and trigger.inputs
+            for trigger in triggers
+        ):
+            raise ValueError(
+                "GitHub schedule cannot be combined with workflow dispatch inputs; "
+                "scheduled runs receive no inputs, not even defaults"
+            )
         object.__setattr__(self, "triggers", triggers)
 
 
@@ -751,6 +846,13 @@ class GitHubActions:
         filenames = [workflow.file.casefold() for workflow in workflows]
         if len(set(filenames)) != len(filenames):
             raise ValueError("GitHub workflow files must be unique")
+        if any(
+            isinstance(trigger, GitHubSchedule) for trigger in self.ship.triggers or ()
+        ):
+            raise ValueError(
+                "The Ship workflow cannot use a schedule; scheduled runs would "
+                "republish the same release version"
+            )
 
     @property
     def default_job(self) -> GitHubJob:
