@@ -1,7 +1,10 @@
+from calendar import Day
 from dataclasses import dataclass
+from datetime import UTC, time
 from importlib.metadata import version
 from pathlib import Path
 from subprocess import CompletedProcess
+from zoneinfo import available_timezones
 
 import pytest
 import yaml
@@ -16,6 +19,7 @@ from omniship.plugins.github import (
     GitHubBooleanInput,
     GitHubBootstrap,
     GitHubContainer,
+    GitHubCron,
     GitHubExternalWorkflow,
     GitHubMatrix,
     GitHubPermission,
@@ -26,6 +30,7 @@ from omniship.plugins.github import (
     GitHubSchedule,
     GitHubShell,
     GitHubStringInput,
+    GitHubTimezone,
     GitHubWorkflow,
     GitHubWorkflowArtifacts,
     GitHubWorkflowDispatch,
@@ -977,8 +982,11 @@ def test_github_schedule_renders_every_cron_with_shared_timezone(
             triggers=[
                 GitHubPullRequest(),
                 GitHubSchedule(
-                    ["0 3 * * SUN", "*/15 9-17 1,15 JAN-JUN MON-FRI"],
-                    timezone="Europe/Istanbul",
+                    [
+                        GitHubCron.weekdays(at=time(3, 0)),
+                        GitHubCron.weekly(Day.SUNDAY, at=time(12, 30)),
+                    ],
+                    timezone=GitHubTimezone.EUROPE_ISTANBUL,
                 ),
             ],
         )
@@ -987,13 +995,55 @@ def test_github_schedule_renders_every_cron_with_shared_timezone(
     document = _generated_check_document(tmp_path, actions)
 
     assert document["on"]["schedule"] == [
-        {"cron": "0 3 * * SUN", "timezone": "Europe/Istanbul"},
-        {"cron": "*/15 9-17 1,15 JAN-JUN MON-FRI", "timezone": "Europe/Istanbul"},
+        {"cron": "0 3 * * 1-5", "timezone": "Europe/Istanbul"},
+        {"cron": "30 12 * * 0", "timezone": "Europe/Istanbul"},
     ]
 
 
 def test_github_schedule_omits_timezone_when_unset() -> None:
-    assert GitHubSchedule(["30 2 * * *"]).to_document() == [{"cron": "30 2 * * *"}]
+    schedule = GitHubSchedule([GitHubCron.daily(at=time(2, 30))])
+
+    assert schedule.to_document() == [{"cron": "30 2 * * *"}]
+
+
+@pytest.mark.parametrize(
+    ("cron", "expression"),
+    [
+        (GitHubCron.every(minutes=15), "*/15 * * * *"),
+        (GitHubCron.hourly(), "0 * * * *"),
+        (GitHubCron.hourly(minute=45), "45 * * * *"),
+        (GitHubCron.daily(at=time(23, 5)), "5 23 * * *"),
+        (GitHubCron.weekdays(at=time(9)), "0 9 * * 1-5"),
+        (
+            GitHubCron.weekly(Day.WEDNESDAY, Day.MONDAY, Day.SUNDAY, at=time(6)),
+            "0 6 * * 0,1,3",
+        ),
+        (GitHubCron.monthly(day=1, at=time(4)), "0 4 1 * *"),
+        (GitHubCron("15 4 1-7 JAN,JUL MON"), "15 4 1-7 JAN,JUL MON"),
+    ],
+)
+def test_github_cron_builders_render_expressions(
+    cron: GitHubCron, expression: str
+) -> None:
+    assert cron.expression == expression
+
+
+@pytest.mark.parametrize(
+    ("build", "message"),
+    [
+        (lambda: GitHubCron.every(minutes=1), "5, 6, 10, 12, 15, 20, or 30"),
+        (lambda: GitHubCron.every(minutes=7), "5, 6, 10, 12, 15, 20, or 30"),
+        (lambda: GitHubCron.hourly(minute=60), "minute"),
+        (lambda: GitHubCron.daily(at=time(3, 0, 30)), "whole minutes"),
+        (lambda: GitHubCron.daily(at=time(3, tzinfo=UTC)), "timezone"),
+        (lambda: GitHubCron.weekly(at=time(3)), "at least one day"),
+        (lambda: GitHubCron.weekly(0, at=time(3)), "calendar.Day"),
+        (lambda: GitHubCron.monthly(day=29, at=time(3)), "1 to 28"),
+    ],
+)
+def test_github_cron_builders_reject_invalid_values(build, message: str) -> None:
+    with pytest.raises((TypeError, ValueError), match=message):
+        build()
 
 
 @pytest.mark.parametrize(
@@ -1013,21 +1063,32 @@ def test_github_schedule_omits_timezone_when_unset() -> None:
         ("@daily", "5 fields"),
     ],
 )
-def test_github_schedule_rejects_invalid_cron(cron: str, message: str) -> None:
+def test_github_cron_rejects_invalid_expression(cron: str, message: str) -> None:
     with pytest.raises(ValueError, match=message):
-        GitHubSchedule([cron])
+        GitHubCron(cron)
 
 
-def test_github_schedule_requires_a_list_of_crons() -> None:
-    with pytest.raises(TypeError, match="iterable of strings"):
-        GitHubSchedule("0 3 * * *")  # type: ignore[arg-type]
+def test_github_schedule_requires_typed_crons() -> None:
+    with pytest.raises(TypeError, match="GitHubCron"):
+        GitHubSchedule(["0 3 * * *"])  # type: ignore[list-item]
     with pytest.raises(ValueError, match="at least one cron"):
         GitHubSchedule([])
 
 
-def test_github_schedule_rejects_unknown_timezone() -> None:
-    with pytest.raises(ValueError, match="IANA time zone"):
-        GitHubSchedule(["0 3 * * *"], timezone="Mars/Olympus_Mons")
+def test_github_schedule_requires_typed_timezone() -> None:
+    with pytest.raises(TypeError, match="GitHubTimezone"):
+        GitHubSchedule(
+            [GitHubCron.daily(at=time(3))],
+            timezone="Europe/Istanbul",  # type: ignore[arg-type]
+        )
+
+
+def test_github_timezones_are_known_iana_zones() -> None:
+    zones = available_timezones()
+    if not zones:
+        pytest.skip("No IANA time zone database is available")
+
+    assert [zone.value for zone in GitHubTimezone if zone.value not in zones] == []
 
 
 def test_github_schedule_cannot_start_ship_workflow() -> None:
@@ -1036,7 +1097,7 @@ def test_github_schedule_cannot_start_ship_workflow() -> None:
             ship=GitHubWorkflow(
                 file="ship.yml",
                 name="Ship",
-                triggers=[GitHubSchedule(["0 3 * * *"])],
+                triggers=[GitHubSchedule([GitHubCron.daily(at=time(3))])],
             )
         )
 
@@ -1047,7 +1108,7 @@ def test_github_schedule_rejects_dispatch_inputs_in_same_workflow() -> None:
             file="check.yml",
             name="Check",
             triggers=[
-                GitHubSchedule(["0 3 * * *"]),
+                GitHubSchedule([GitHubCron.daily(at=time(3))]),
                 GitHubWorkflowDispatch(
                     inputs=[GitHubBooleanInput("full", default=False)]
                 ),
@@ -1056,16 +1117,14 @@ def test_github_schedule_rejects_dispatch_inputs_in_same_workflow() -> None:
 
 
 def test_github_schedule_allows_dispatch_without_inputs() -> None:
+    nightly = GitHubSchedule([GitHubCron.daily(at=time(3))])
     workflow = GitHubWorkflow(
         file="check.yml",
         name="Check",
-        triggers=[GitHubSchedule(["0 3 * * *"]), GitHubWorkflowDispatch()],
+        triggers=[nightly, GitHubWorkflowDispatch()],
     )
 
-    assert workflow.triggers == (
-        GitHubSchedule(("0 3 * * *",)),
-        GitHubWorkflowDispatch(),
-    )
+    assert workflow.triggers == (nightly, GitHubWorkflowDispatch())
 
 
 def test_github_actions_rejects_empty_node_runner_list() -> None:

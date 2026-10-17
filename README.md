@@ -465,22 +465,36 @@ Manual dispatch workflows can declare `GitHubStringInput` and
 `GitHubBooleanInput` values. Typed blocks bind those inputs directly;
 imperative tasks read them through `ctx.inputs`.
 
-`GitHubSchedule` runs the Check or Build workflow on cron schedules. Crons
-use GitHub's five-field syntax and share an optional IANA `timezone`; without
-one, GitHub uses UTC.
+`GitHubSchedule` runs the Check or Build workflow on one or more
+`GitHubCron` schedules that share an optional `GitHubTimezone`; without one,
+GitHub uses UTC.
 
 ```python
-from omniship.plugins.github import GitHubSchedule
+from calendar import Day
+from datetime import time
+
+from omniship.plugins.github import GitHubCron, GitHubSchedule, GitHubTimezone
 
 check=GitHubWorkflow(
     file="check.yml",
     name="Check",
     triggers=[
         GitHubPullRequest(),
-        GitHubSchedule(["0 3 * * MON-FRI"], timezone="Europe/Istanbul"),
+        GitHubSchedule(
+            [
+                GitHubCron.weekdays(at=time(3, 0)),
+                GitHubCron.weekly(Day.SATURDAY, Day.SUNDAY, at=time(12, 0)),
+            ],
+            timezone=GitHubTimezone.EUROPE_ISTANBUL,
+        ),
     ],
 )
 ```
+
+`GitHubCron` also provides `every(minutes=15)`, `hourly(minute=30)`,
+`daily(at=...)` and `monthly(day=1, at=...)`. For anything else, pass a
+five-field cron expression directly, such as `GitHubCron("15 4 1-7 * MON")`;
+OmniShip validates it when generating workflows.
 
 A schedule starts only the workflow it is attached to; a scheduled Check does
 not continue into Build or Ship. OmniShip rejects a schedule on the Ship
