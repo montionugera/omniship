@@ -1627,6 +1627,8 @@ class GitHubActionsGenerator:
                     or placement.permissions is not None
                 ):
                     step_env["GITHUB_TOKEN"] = "${{ github.token }}"
+                if placement.outputs:
+                    step_env["OMNISHIP_OUTPUT"] = "$GITHUB_OUTPUT"
                 if step_env:
                     run_step["env"] = step_env
                 steps.append(run_step)

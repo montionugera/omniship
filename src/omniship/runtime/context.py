@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from collections.abc import Iterable, Iterator
@@ -11,6 +12,8 @@ from uuid import uuid4
 from omniship.core.artifact import Artifact
 from omniship.core.execution import ExecutionHost
 from omniship.core.logging import LogLevel, LogStream
+
+_UNSET: Any = object()
 
 
 class TaskFailure(Exception):
@@ -83,10 +86,16 @@ class TaskArtifacts:
 
 @dataclass
 class TaskOutputs:
-    """Named values a task can expose to dependent GitHub jobs."""
+    """Named values a task can expose to dependent jobs."""
 
-    output_file: str | None = None
+    output_file: str | None = field(default=_UNSET)
     values: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.output_file is _UNSET:
+            self.output_file = os.environ.get("OMNISHIP_OUTPUT")
+        if self.output_file == "$GITHUB_OUTPUT" or self.output_file == "${GITHUB_OUTPUT}":
+            self.output_file = os.environ.get("GITHUB_OUTPUT")
 
     def set(self, name: str, value: str) -> None:
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None:
@@ -152,7 +161,12 @@ class TaskContext:
         self.env = dict(env)
         self.log = TaskLog(_emit=log_sink)
         self.artifacts = TaskArtifacts(self.workspace, tuple(artifacts))
-        self.outputs = TaskOutputs(self.env.get("GITHUB_OUTPUT"))
+        output_file = self.env.get("OMNISHIP_OUTPUT")
+        if output_file == "$GITHUB_OUTPUT" or output_file == "${GITHUB_OUTPUT}":
+            output_file = self.env.get("GITHUB_OUTPUT") or os.environ.get("GITHUB_OUTPUT")
+        if not output_file:
+            output_file = self.env.get("GITHUB_OUTPUT")
+        self.outputs = TaskOutputs(output_file)
         self.inputs = dict(inputs or {})
         self.git = GitTools(self.workspace)
         self.host = host or ExecutionHost.detect()
