@@ -1,6 +1,7 @@
 import asyncio
 import os
 from dataclasses import replace
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 
 from rich.console import Console
@@ -29,7 +30,7 @@ def run_pipeline(
     artifact_export_path: str | None = None,
 ) -> int:
     console = console or Console()
-    console.print("[bold]OmniShip v0.1.0[/bold]")
+    console.print(f"[bold]OmniShip v{distribution_version('omniship')}[/bold]")
 
     # 1. Load plugins
     registry = load_plugins()
