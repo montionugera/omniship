@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Protocol
@@ -50,6 +51,39 @@ def _digest_path(path: Path) -> ArtifactDigest:
     else:
         raise ValueError(f"Artifact is not a file or directory: {path}")
     return ArtifactDigest("sha256", digest.hexdigest())
+
+
+def _executables(path: Path) -> list[str]:
+    """Return item-relative paths of executable files.
+
+    CI artifact transfers drop file modes, so bundles record them explicitly.
+    """
+
+    if path.is_file():
+        return ["."] if path.stat().st_mode & 0o111 else []
+    return [
+        candidate.relative_to(path).as_posix()
+        for candidate in sorted(path.rglob("*"))
+        if candidate.is_file() and candidate.stat().st_mode & 0o111
+    ]
+
+
+def _restore_executables(entry: dict, stored: Path, path: str) -> None:
+    executables = entry.get("executables", [])
+    if not isinstance(executables, list) or any(
+        not isinstance(item, str) or not item for item in executables
+    ):
+        raise ValueError(f"Invalid artifact executables: {path}")
+    for item in executables:
+        target = stored / item
+        resolved = target.resolve()
+        if (
+            not resolved.is_relative_to(stored)
+            or target.is_symlink()
+            or not resolved.is_file()
+        ):
+            raise ValueError(f"Invalid artifact executable path: {path}")
+        resolved.chmod(resolved.stat().st_mode | 0o111)
 
 
 def _provenance_document(
@@ -177,6 +211,7 @@ def export_artifacts(artifacts: ArtifactSet, destination: str | Path) -> Path:
                     "value": digest.value,
                 },
                 "provenance": _provenance_document(artifact.provenance),
+                "executables": _executables(target),
             }
         )
 
@@ -247,6 +282,10 @@ def import_artifacts(
             actual = _digest_path(stored)
             if not hmac.compare_digest(digest.value, actual.value):
                 raise ValueError(f"Artifact digest mismatch: {path}")
+        else:
+            # Version 1 has no digest; still reject symlinks inside directories.
+            _digest_path(stored)
+        _restore_executables(entry, stored, path)
         artifacts.add(
             Artifact.from_path(
                 stored,
@@ -265,10 +304,21 @@ def import_artifact_bundles(
     *,
     expected_revision: str | None = None,
 ) -> ArtifactSet:
-    """Merge every artifact bundle found recursively below ``source``."""
+    """Merge every artifact bundle found recursively below ``source``.
+
+    The search stops at each bundle root, so ``manifest.json`` files inside
+    artifact contents (web app or extension manifests) are never parsed.
+    """
 
     root = Path(source).resolve()
-    manifests = sorted(root.rglob(MANIFEST_NAME))
+    manifests = []
+    for directory, subdirectories, files in os.walk(root):
+        if MANIFEST_NAME in files:
+            manifests.append(Path(directory) / MANIFEST_NAME)
+            subdirectories.clear()
+        else:
+            subdirectories.sort()
+    manifests.sort()
     if not manifests:
         raise ValueError(f"No artifact manifests found under: {root}")
 

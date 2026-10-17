@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
+import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -58,6 +61,18 @@ class GitHub:
                 "GITHUB_TOKEN is required for github/release when dry_run is false"
             )
 
+        pushed_tag = self.context.env.get("GITHUB_REF_NAME")
+        if (
+            not dry_run
+            and self.context.env.get("GITHUB_REF_TYPE") == "tag"
+            and pushed_tag
+            and pushed_tag != tag
+        ):
+            raise TaskFailure(
+                f"Release tag '{tag}' does not match the pushed tag '{pushed_tag}'; "
+                "update the project version and regenerate the workflow"
+            )
+
         artifacts = self._select_artifacts(tuple(files))
         release_url = f"https://github.com/{repository}/releases/tag/{tag}"
         if dry_run:
@@ -70,8 +85,10 @@ class GitHub:
             )
 
         try:
-            payload = json.dumps(
-                {
+            # A re-run reuses the release created by an earlier attempt.
+            data = self._existing_release(token, repository, tag)
+            if data is None:
+                document: dict[str, object] = {
                     "tag_name": tag,
                     "name": title or tag,
                     "body": "" if notes in (None, "auto") else notes,
@@ -79,21 +96,23 @@ class GitHub:
                     "draft": draft,
                     "prerelease": prerelease,
                 }
-            ).encode("utf-8")
-            request = urllib.request.Request(
-                f"https://api.github.com/repos/{repository}/releases",
-                data=payload,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/vnd.github+json",
-                    "User-Agent": "OmniShip-v0.1",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(request, timeout=15) as response:
-                data = json.loads(response.read().decode("utf-8"))
+                # Used only when the tag does not exist yet.
+                if target := self.context.env.get("GITHUB_SHA"):
+                    document["target_commitish"] = target
+                request = urllib.request.Request(
+                    f"https://api.github.com/repos/{repository}/releases",
+                    data=json.dumps(document).encode("utf-8"),
+                    headers=self._api_headers(token),
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=15) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+            else:
+                self.context.log.info(f"Reusing existing release {tag}")
             release_url = data.get("html_url", "")
-            self._upload_artifacts(token, data.get("upload_url", ""), artifacts)
+            self._upload_artifacts(token, data, artifacts)
+        except TaskFailure:
+            raise
         except Exception as exc:
             raise TaskFailure(f"GitHub release creation failed: {exc}") from exc
 
@@ -190,20 +209,20 @@ class GitHub:
     def _select_artifacts(self, files: tuple[str, ...]) -> list[Artifact]:
         available = tuple(self.context.artifacts)
         if not files:
-            return list(available)
+            selected = []
+            for artifact in available:
+                if artifact.path.is_dir():
+                    self.context.log.info(
+                        f"Skipping directory artifact '{artifact.name}'; "
+                        "release assets must be files"
+                    )
+                else:
+                    selected.append(artifact)
+            return selected
 
-        selected: list[Artifact] = []
+        selected = []
         for file_ref in files:
-            artifact = next(
-                (
-                    item
-                    for item in available
-                    if item.name == file_ref
-                    or str(item.path) == file_ref
-                    or str(item.path).endswith(file_ref)
-                ),
-                None,
-            )
+            artifact = next((item for item in available if item.matches(file_ref)), None)
             if artifact is not None:
                 selected.append(artifact)
                 continue
@@ -213,6 +232,12 @@ class GitHub:
                     f"Artifact '{file_ref}' not found in context or workspace"
                 )
             selected.append(Artifact.from_path(path))
+        for artifact in selected:
+            if not artifact.path.is_file():
+                raise TaskFailure(
+                    f"Release asset '{artifact.name}' must be a file; "
+                    "archive directories before releasing them"
+                )
         return selected
 
     def _log_dry_run(
@@ -240,21 +265,58 @@ class GitHub:
             "User-Agent": "OmniShip-v0.1",
         }
 
-    @staticmethod
-    def _upload_artifacts(
+    @classmethod
+    def _existing_release(
+        cls,
         token: str,
-        upload_url: str,
+        repository: str,
+        tag: str,
+    ) -> dict | None:
+        request = urllib.request.Request(
+            f"https://api.github.com/repos/{repository}/releases/tags/"
+            f"{urllib.parse.quote(tag, safe='')}",
+            headers=cls._api_headers(token),
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
+
+    def _upload_artifacts(
+        self,
+        token: str,
+        release: dict,
         artifacts: list[Artifact],
     ) -> None:
+        upload_url = release.get("upload_url", "")
         if not upload_url or "{" not in upload_url:
             return
         base_upload_url = upload_url.split("{")[0]
+        existing = {
+            asset.get("name"): asset.get("digest") for asset in release.get("assets", [])
+        }
         for artifact in artifacts:
-            if not artifact.path.is_file():
+            content = artifact.path.read_bytes()
+            if artifact.name in existing:
+                digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
+                if existing[artifact.name] != digest:
+                    reason = (
+                        "different content"
+                        if existing[artifact.name]
+                        else "content that cannot be verified"
+                    )
+                    raise TaskFailure(
+                        f"Release asset {artifact.name} already exists with {reason}"
+                    )
+                self.context.log.info(f"Release asset {artifact.name} already uploaded")
                 continue
             request = urllib.request.Request(
-                f"{base_upload_url}?name={artifact.name}",
-                data=artifact.path.read_bytes(),
+                f"{base_upload_url}?name={urllib.parse.quote(artifact.name, safe='')}",
+                data=content,
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Content-Type": "application/octet-stream",

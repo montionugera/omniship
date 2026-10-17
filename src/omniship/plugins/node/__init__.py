@@ -45,6 +45,9 @@ class NodeToolchain:
             inputs["node-version"] = self.version
         else:
             inputs["node-version-file"] = self.version_file
+        # npm ignores NODE_AUTH_TOKEN unless an .npmrc references it;
+        # setup-node writes that .npmrc only when registry-url is set.
+        inputs["registry-url"] = "https://registry.npmjs.org"
         return GitHubActionStep("setup-node", "Set up Node.js", inputs)
 
 

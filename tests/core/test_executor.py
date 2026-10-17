@@ -177,3 +177,70 @@ async def test_condition_skipping(tmp_path: Path, registry: PluginRegistry):
     success = await executor.execute_stage(graph, context)
     assert success is True
     assert context.results["conditional_node"].is_skipped
+
+
+@pytest.mark.asyncio
+async def test_failure_skips_are_reported_transitively(
+    tmp_path: Path, registry: PluginRegistry
+):
+    """failing -> middle -> leaf: leaf is skipped because of a failure."""
+    graph = StageGraph(stage=Stage.CHECK)
+    graph.add_node(Node(id="failing", stage=Stage.CHECK, operation_name="test/failing"))
+    graph.add_node(
+        Node(
+            id="middle",
+            stage=Stage.CHECK,
+            operation_name="core/noop",
+            dependencies=frozenset({"failing"}),
+        )
+    )
+    graph.add_node(
+        Node(
+            id="leaf",
+            stage=Stage.CHECK,
+            operation_name="core/noop",
+            dependencies=frozenset({"middle"}),
+        )
+    )
+    context = ExecutionContext(workspace_root=tmp_path, stage=Stage.CHECK)
+
+    await StageExecutor(registry=registry).execute_stage(graph, context)
+
+    assert context.results["leaf"].error_message == "Dependency 'middle' failed"
+
+
+@pytest.mark.asyncio
+async def test_condition_skips_are_not_reported_as_failures(
+    tmp_path: Path, registry: PluginRegistry
+):
+    """conditional -> middle -> leaf: no node failed, so no failure is reported."""
+    graph = StageGraph(stage=Stage.CHECK)
+    graph.add_node(
+        Node(
+            id="conditional",
+            stage=Stage.CHECK,
+            operation_name="core/noop",
+            condition={"env": {"NON_EXISTENT_VAR_123": "yes"}},
+        )
+    )
+    graph.add_node(
+        Node(
+            id="middle",
+            stage=Stage.CHECK,
+            operation_name="core/noop",
+            dependencies=frozenset({"conditional"}),
+        )
+    )
+    graph.add_node(
+        Node(
+            id="leaf",
+            stage=Stage.CHECK,
+            operation_name="core/noop",
+            dependencies=frozenset({"middle"}),
+        )
+    )
+    context = ExecutionContext(workspace_root=tmp_path, stage=Stage.CHECK)
+
+    await StageExecutor(registry=registry).execute_stage(graph, context)
+
+    assert context.results["leaf"].error_message == "Dependency 'middle' was skipped"
