@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -233,6 +234,7 @@ def test_artifact_bundle_root_ignores_manifest_files_inside_artifacts(
     assert (artifact.path / "manifest.json").is_file()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
 def test_artifact_bundle_restores_executable_files(tmp_path: Path) -> None:
     binary = tmp_path / "tool"
     binary.write_bytes(b"#!/bin/sh\n")
