@@ -39,7 +39,6 @@ from omniship.plugins.github.actions import GitHubActionsGenerator
 from omniship.plugins.github.dependencies import GitHubActionLock
 from omniship.plugins.registry import PluginRegistry
 from omniship.runtime import TaskContext
-from omniship.runtime.context import TaskOutputs
 from omniship.workflow.compiler import compile_pipeline
 from omniship.workflow.model import (
     GitPluginPackage,
@@ -644,20 +643,6 @@ def test_github_output_reference_requires_a_declared_dependency(tmp_path: Path) 
         )
 
 
-def test_task_context_writes_declared_github_outputs(tmp_path: Path) -> None:
-    output_file = tmp_path / "github-output"
-    context = TaskContext(tmp_path, {"GITHUB_OUTPUT": str(output_file)})
-
-    context.outputs.set("version", "1.2.3")
-    context.outputs.set("notes", "first\nsecond")
-
-    assert context.outputs.get("version") == "1.2.3"
-    content = output_file.read_text(encoding="utf-8")
-    assert "version=1.2.3\n" in content
-    assert "notes<<" in content
-    assert "first\nsecond\n" in content
-
-
 def test_task_context_writes_declared_omniship_outputs(tmp_path: Path) -> None:
     output_file = tmp_path / "omniship-output"
     context = TaskContext(tmp_path, {"OMNISHIP_OUTPUT": str(output_file)})
@@ -672,7 +657,9 @@ def test_task_context_writes_declared_omniship_outputs(tmp_path: Path) -> None:
     assert "first\nsecond\n" in content
 
 
-def test_task_context_prefers_omniship_output_over_github_output(tmp_path: Path) -> None:
+def test_task_context_prefers_omniship_output_over_github_output(
+    tmp_path: Path,
+) -> None:
     omniship_output = tmp_path / "omniship-output"
     github_output = tmp_path / "github-output"
     context = TaskContext(
@@ -702,31 +689,29 @@ def test_task_context_resolves_github_output_variable(tmp_path: Path) -> None:
     assert "key=val\n" in github_output.read_text(encoding="utf-8")
 
 
-def test_task_outputs_from_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_task_context_resolves_custom_output_variable(tmp_path: Path) -> None:
+    custom_output = tmp_path / "custom-output"
+    context = TaskContext(
+        tmp_path,
+        {
+            "OMNISHIP_OUTPUT": "${CUSTOM_OUT}",
+            "CUSTOM_OUT": str(custom_output),
+        },
+    )
+
+    context.outputs.set("key", "val")
+    assert "key=val\n" in custom_output.read_text(encoding="utf-8")
+
+
+def test_task_context_ignores_github_output_without_omniship_output(
+    tmp_path: Path,
 ) -> None:
-    output_file = tmp_path / "env-output"
-    monkeypatch.setenv("OMNISHIP_OUTPUT", str(output_file))
-    outputs = TaskOutputs()
+    github_output = tmp_path / "github-output"
+    context = TaskContext(tmp_path, {"GITHUB_OUTPUT": str(github_output)})
 
-    outputs.set("tag", "v1.0.0")
-    assert outputs.get("tag") == "v1.0.0"
-    assert "tag=v1.0.0\n" in output_file.read_text(encoding="utf-8")
-
-
-def test_task_outputs_docstring_is_provider_neutral() -> None:
-    assert "GitHub" not in (TaskOutputs.__doc__ or "")
-
-
-def test_task_outputs_resolves_github_output_env_var(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    output_file = tmp_path / "gh-out"
-    monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
-    outputs = TaskOutputs(output_file="$GITHUB_OUTPUT")
-
-    outputs.set("foo", "bar")
-    assert "foo=bar\n" in output_file.read_text(encoding="utf-8")
+    context.outputs.set("key", "val")
+    assert context.outputs.get("key") == "val"
+    assert not github_output.exists()
 
 
 def test_github_matrix_include_requires_configured_runner() -> None:
